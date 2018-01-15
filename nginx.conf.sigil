@@ -1,0 +1,122 @@
+# Settings
+gzip_http_version 1.0;
+gzip_proxied      any;
+gzip_min_length   500;
+gzip_disable      "MSIE [1-6]\.";
+gzip_types        text/plain text/xml text/css
+                  text/comma-separated-values
+                  text/javascript
+                  application/json
+                  application/xml
+                  application/x-javascript
+                  application/javascript
+                  application/atom+xml;
+
+proxy_redirect          off;
+proxy_connect_timeout   90;
+proxy_send_timeout      90;
+proxy_read_timeout      90;
+proxy_buffers           32 4k;
+proxy_buffer_size       8k;
+proxy_set_header        Host $http_host;
+proxy_set_header        X-Real-IP $remote_addr;
+proxy_set_header        X-Forward-For $proxy_add_x_forwarded_for;
+# when redirecting to https:
+# proxy_set_header         X-Forwarded-Proto https;
+proxy_set_header         X-Forwarded-Host $http_host;
+proxy_headers_hash_bucket_size 64;
+
+# Configuration for the server
+server {
+  listen      [::]:80;
+  listen 80;
+  server_name {{ .NOSSL_SERVER_NAME }};
+  client_max_body_size 1G;
+  add_header Strict-Transport-Security "max-age=31536000";
+  access_log  /var/log/nginx/{{ .APP }}-access.log;
+  error_log   /var/log/nginx/{{ .APP }}-error.log;
+
+  location /web/login {
+    return 301 https://{{ if .NOSSL_SERVER_NAME }}{{ .NOSSL_SERVER_NAME }}{{ end }}{{ if .SSL_SERVER_NAME }}{{ .SSL_SERVER_NAME }}{{ end }}$request_uri;
+  }
+
+  location / {
+    proxy_pass http://{{ .APP }}-8069;
+    proxy_read_timeout    1h;
+    proxy_connect_timeout 5s;
+    proxy_redirect        off;
+
+    add_header X-Static no;
+    proxy_buffer_size 64k;
+    proxy_buffering off;
+    proxy_buffers 4 64k;
+    proxy_busy_buffers_size 64k;
+    proxy_intercept_errors on;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Port $server_port;
+    proxy_set_header X-Request-Start $msec;
+  }
+
+  location /longpolling/im/poll { proxy_pass http://{{ .APP }}-8072; }
+  location /longpolling/poll { proxy_pass http://{{ .APP }}-8072; }
+
+  location ~* /[^/]+/static/ {
+      proxy_cache_valid 200 60m;
+      proxy_buffering on;
+      expires 864000;
+      proxy_pass http://{{ .APP }}-8069;
+  }
+  include {{ $.DOKKU_ROOT }}/{{ $.APP }}/nginx.conf.d/*.conf;
+}
+
+
+# SSL section
+server {
+  listen      [::]:443 ssl;
+  listen      443 ssl;
+  {{ if .NOSSL_SERVER_NAME }}server_name {{ .NOSSL_SERVER_NAME }}; {{ end }}
+  {{ if .SSL_SERVER_NAME }}server_name {{ .SSL_SERVER_NAME }}; {{ end }}
+
+  access_log  /var/log/nginx/{{ .APP }}-access.log;
+  error_log   /var/log/nginx/{{ .APP }}-error.log;
+
+  ssl_certificate     {{ .APP_SSL_PATH }}/server.crt;
+  ssl_certificate_key {{ .APP_SSL_PATH }}/server.key;
+
+  keepalive_timeout   70;
+  add_header          Alternate-Protocol  443:npn-spdy/2;
+  location    / {
+    proxy_pass  http://{{ .APP }}-8069;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-SSL on;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Port $server_port;
+    proxy_set_header X-Request-Start $msec;
+  }
+  location /longpolling/im/poll { proxy_pass http://{{ .APP }}-8072; }
+  location /longpolling/poll { proxy_pass http://{{ .APP }}-8072; }
+  include {{ .DOKKU_ROOT }}/{{ .APP }}/nginx.conf.d/*.conf;
+}
+
+
+upstream {{ .APP }}-8069 {
+{{ range $listeners_map := .DOKKU_APP_LISTENERS | split " " }}
+  {{ $ip_port_list := $listeners_map | split ":" }}
+  server {{ index $ip_port_list 0 }}:8069;
+{{ end }}
+}
+upstream {{ .APP }}-8072 {
+{{ range $listeners_map := .DOKKU_APP_LISTENERS | split " " }}
+  {{ $ip_port_list := $listeners_map | split ":" }}
+  server {{ index $ip_port_list 0 }}:8072;
+{{ end }}
+}
